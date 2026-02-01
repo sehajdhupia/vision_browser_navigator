@@ -1,0 +1,6 @@
+playwright
+openai
+pillow
+python-dotenv
+selenium 
+webdriver-manager

@@ -8,16 +8,16 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ---------------------------------------------------------------------------
-# PHASE 1 PROMPT — vision model looks at screenshot, decides WHAT to do.
-# For clicks it outputs a text description, NOT coordinates.
+# BASE SYSTEM PROMPT — return schema is given dynamically
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """
+BASE_SYSTEM_PROMPT = """
 You are an autonomous web navigation agent.
 
 You are given:
 - A screenshot of the current webpage
 - A user goal
 - A short history of previous actions
+- A REQUIRED JSON output schema
 
 Your task is to decide the NEXT SINGLE action to take.
 
@@ -29,7 +29,7 @@ Valid actions:
 CLICK — describe the target in plain text. Do NOT guess pixel coordinates.
 {
   "action": "click",
-  "target": "<describe exactly what you want to click, e.g. 'the openclaw/openclaw repository link'>",
+  "target": "<what you want to click>",
   "reason": "<why>"
 }
 
@@ -37,7 +37,7 @@ TYPE:
 {
   "action": "type",
   "text": "<text to type>",
-  "reason": "<short reason>"
+  "reason": "<why>"
 }
 
 ENTER:
@@ -53,32 +53,34 @@ SCROLL:
 FINISH:
 {
   "action": "finish",
-  "result": {
-    "repository": "<repo name>",
-    "latest_release": {
-      "version": "<version>",
-      "tag": "<tag>",
-      "author": "<author>"
-    }
-  }
+  "result": <JSON object matching the required schema>
 }
+
+Rules for FINISH:
+- The result MUST match the schema EXACTLY.
+- All required keys must be present.
+- If a value is not visible on the page, use null.
+- Do NOT invent data.
+- Do NOT add extra keys.
+
+Required Output Schema:
+<JSON_SCHEMA>
 """
 
 # ---------------------------------------------------------------------------
-# PHASE 2 PROMPT — no vision needed. Pure text matching: given a list of
-# clickable elements from the DOM and a target description, pick the index.
+# PHASE 2 PROMPT — resolve semantic target -> DOM element index
 # ---------------------------------------------------------------------------
 RESOLVE_PROMPT = """
 You are given a list of clickable elements on a webpage and a target description.
 Pick the element that best matches the target.
 
-Respond with EXACTLY ONE valid JSON object, nothing else:
+Respond with EXACTLY ONE valid JSON object:
 {
   "index": <int>,
   "reason": "<why this element matches>"
 }
 
-If no element is a reasonable match, respond:
+If no element matches, respond:
 {
   "index": -1,
   "reason": "<why nothing matched>"
@@ -87,7 +89,6 @@ If no element is a reasonable match, respond:
 
 
 def extract_first_json(text: str):
-    """Extract the first valid JSON object from a string."""
     decoder = json.JSONDecoder()
     text = text.strip()
     for i in range(len(text)):
@@ -97,20 +98,23 @@ def extract_first_json(text: str):
                 return obj
             except json.JSONDecodeError:
                 continue
-    raise ValueError(f"No valid JSON object found in model output:\n{text}")
+    raise ValueError(f"No valid JSON object found:\n{text}")
 
 
-def decide_next_action(image_b64, goal, history):
-    """
-    Phase 1: look at the screenshot and decide what action to take.
-    For clicks, this returns a 'target' description — not coordinates.
-    """
+def decide_next_action(image_b64, goal, output_schema, history):
+    schema_text = json.dumps(output_schema, indent=2)
+
+    system_prompt = BASE_SYSTEM_PROMPT.replace(
+        "<JSON_SCHEMA>",
+        schema_text
+    )
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=[
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT
+                "content": system_prompt
             },
             {
                 "role": "user",
@@ -126,22 +130,13 @@ def decide_next_action(image_b64, goal, history):
                 ]
             }
         ],
-        max_output_tokens=400
+        max_output_tokens=500
     )
 
     return extract_first_json(response.output_text)
 
 
 def resolve_click(target_description, clickable_elements):
-    """
-    Phase 2: given the vision model's target description and the real list
-    of clickable DOM elements (from browser.get_clickable_elements()),
-    use a text-only LLM call to pick the correct element index.
-
-    This is the key step that makes clicking deterministic — we match against
-    actual DOM nodes, not pixel coordinates.
-    """
-    # Format the element list for the prompt
     elements_text = "\n".join(
         f"[{el['index']}] <{el['tag']}> text=\"{el['text']}\" href={el['href']}"
         for el in clickable_elements
@@ -149,7 +144,7 @@ def resolve_click(target_description, clickable_elements):
 
     prompt = (
         f"Target description: {target_description}\n\n"
-        f"Clickable elements on the page:\n{elements_text}"
+        f"Clickable elements:\n{elements_text}"
     )
 
     response = client.responses.create(
@@ -167,5 +162,4 @@ def resolve_click(target_description, clickable_elements):
         max_output_tokens=200
     )
 
-    result = extract_first_json(response.output_text)
-    return result  # { "index": <int>, "reason": "<str>" }
+    return extract_first_json(response.output_text)

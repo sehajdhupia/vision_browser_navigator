@@ -1,8 +1,8 @@
 {
-  "repository": "openclaw/openclaw",
+  "package": "openclaw",
   "latest_release": {
     "version": "2026.1.30",
-    "tag": "v2026.1.30",
+    "date": "yesterday",
     "author": "steipete"
   }
 }

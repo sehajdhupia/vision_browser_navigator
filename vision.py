@@ -45,10 +45,21 @@ ENTER:
   "action": "enter"
 }
 
-SCROLL:
+SCROLL DOWN:
 {
   "action": "scroll"
 }
+
+SCROLL UP:
+{
+  "action": "scroll_up"
+}
+
+SCROLL TO TOP:
+{
+  "action": "scroll_top"
+}
+
 
 FINISH:
 {

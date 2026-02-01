@@ -219,6 +219,14 @@ class Browser:
         self.driver.execute_script("window.scrollBy(0, 900);")
         time.sleep(0.7)
 
+    def scroll_up(self):
+        self.driver.execute_script("window.scrollBy(0, -900);")
+        time.sleep(0.7)
+
+    def scroll_to_top(self):
+        self.driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.7)
+
     # ---------- CLEANUP ----------
 
     def close(self):

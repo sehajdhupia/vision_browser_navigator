@@ -1,0 +1,37 @@
+python3 navigate.py \
+  --url "https://github.com" \
+  --prompt "search for sehajdhupia/mini_rag_chatbot and determine what the project does" \
+  --format '{
+    "project_name": "string",
+    "description": {
+      "project_explanation": "string",
+      "version": "string",
+      "date": "string",
+      "author": "string"
+    }
+  }'
+
+python3 navigate.py \
+  --url "https://www.cnn.com/" \
+  --prompt "Go to the main page on cnn and fetch me the details of the headlining article such as headline, author, date, and a brief summary" \
+  --format '{
+    "description": {
+      "headline": "string",
+      "author": "string",
+      "date": "string",
+      "summary": "string"
+    }
+  }'
+
+python3 navigate.py \
+  --url "https://github.com" \
+  --prompt "search for openclaw and get the current release and related tags" \
+  --format '{
+    "package": "string",
+    "latest_release": {
+      "version": "string",
+      "tag": "string",
+      "date": "string",
+      "author": "string"
+    }
+  }'

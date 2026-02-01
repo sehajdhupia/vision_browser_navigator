@@ -94,6 +94,17 @@ def main():
                 before_hash = browser.screenshot_hash()
                 browser.scroll_down()
 
+            elif action == "scroll_up":
+                before_url = browser.current_url()
+                before_hash = browser.screenshot_hash()
+                browser.scroll_up()
+
+            elif action == "scroll_top":
+                before_url = browser.current_url()
+                before_hash = browser.screenshot_hash()
+                browser.scroll_to_top()
+
+
             elif action == "finish":
                 print("\nFINAL RESULT:")
                 print(json.dumps(decision["result"], indent=2))

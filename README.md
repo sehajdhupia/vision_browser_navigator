@@ -121,19 +121,20 @@ python3 navigate.py \
   --url "<starting_url>" \
   --prompt "<goal>" \
   --format '<json_schema>'
-  ```
+```
 
 Example:
 
 ```bash
 python3 navigate.py \
   --url "https://github.com" \
-  --prompt "search for openclaw and extract the latest release version and author" \
+  --prompt "search for openclaw and get the current release and related tags" \
   --format '{
-    "package": "string",
     "latest_release": {
       "version": "string",
+      "tag": "string",
+      "date": "string",
       "author": "string"
     }
-}'
+  }'
 ```

@@ -135,5 +135,5 @@ python3 navigate.py \
       "version": "string",
       "author": "string"
     }
-    }'
+}'
 ```

@@ -5,10 +5,105 @@ import hashlib
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common import action_chains
+from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
+
+
+# ---------------------------------------------------------------------
+# How execute_script works:
+#   Selenium wraps whatever string you pass into:
+#       function anonymous(/* ...args */) { <YOUR CODE HERE> }
+#   and then calls it, passing any extra Python arguments as the
+#   `arguments` object.
+#
+#   That means:
+#     - A bare `return x;` sends x back to Python.  Good.
+#     - An IIFE like `(function(){ return x; })()` returns x from the
+#       *inner* function.  The outer anonymous function never sees it,
+#       so Selenium gets `undefined` (None in Python).  Bad.
+#     - `arguments[0]` refers to Selenium's first extra arg -- but only
+#       at the top level.  Inside an IIFE `arguments` is the IIFE's own
+#       (empty) argument list.
+#
+#   Both JS blocks below are written as plain top-level statements for
+#   exactly these reasons.
+# ---------------------------------------------------------------------
+
+_EXTRACT_CLICKABLES_JS = r"""
+    const results = [];
+    const seen = new Set();
+
+    const candidates = document.querySelectorAll(
+        "a, button, [role='button'], [role='link'], "
+        + "input[type='submit'], input[type='button'], "
+        + "select, textarea, input:not([type='hidden']), "
+        + "[tabindex='0'], summary"
+    );
+
+    candidates.forEach(function(el) {
+        if (seen.has(el)) return;
+        seen.add(el);
+
+        var rect = el.getBoundingClientRect();
+
+        if (rect.width < 1 || rect.height < 1) return;
+        if (rect.top > window.innerHeight || rect.bottom < 0) return;
+        if (rect.left > window.innerWidth || rect.right < 0) return;
+
+        var text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length === 0 && el.tagName !== "INPUT") return;
+
+        results.push({
+            index: results.length,
+            tag: el.tagName.toLowerCase(),
+            text: text.substring(0, 120),
+            href: el.getAttribute("href") || null,
+            rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                w: Math.round(rect.width),
+                h: Math.round(rect.height)
+            }
+        });
+    });
+
+    // Mirror the same filtering in the clickable map so indices match.
+    window.__clickable_map__ = [];
+    var idx = 0;
+    candidates.forEach(function(el) {
+        if (!seen.has(el)) return;
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) return;
+        if (rect.top > window.innerHeight || rect.bottom < 0) return;
+        if (rect.left > window.innerWidth || rect.right < 0) return;
+        var text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length === 0 && el.tagName !== "INPUT") return;
+        window.__clickable_map__[idx] = el;
+        idx++;
+    });
+
+    return results;
+"""
+
+# arguments[0] here is the index Selenium passes as the second arg to
+# execute_script().  It works because this code runs at the top level
+# of the wrapper function, not inside an IIFE.
+_CLICK_BY_INDEX_JS = """
+    var idx = arguments[0];
+    var el = window.__clickable_map__ && window.__clickable_map__[idx];
+    if (!el) {
+        return { ok: false, reason: "Element index " + idx + " not found in clickable map" };
+    }
+
+    el.scrollIntoView({ block: "center", inline: "center" });
+
+    return {
+        ok: true,
+        tag: el.tagName.toLowerCase(),
+        text: (el.innerText || "").substring(0, 80),
+        href: el.getAttribute("href") || null
+    };
+"""
 
 
 class Browser:
@@ -42,6 +137,17 @@ class Browser:
         png = self.driver.get_screenshot_as_png()
         return base64.b64encode(png).decode("utf-8")
 
+    def get_clickable_elements(self):
+        """
+        Extract all visible, interactive elements from the current page.
+        Returns a list of dicts with: index, tag, text, href, rect.
+        Also populates window.__clickable_map__ so we can click by index.
+        """
+        result = self.driver.execute_script(_EXTRACT_CLICKABLES_JS)
+        # Safety: if Chrome somehow returns None, hand back an empty list
+        # so callers don't have to null-check.
+        return result if result is not None else []
+
     # ---------- ACTIONS ----------
 
     def type_text(self, text):
@@ -52,76 +158,62 @@ class Browser:
         self.driver.switch_to.active_element.send_keys(Keys.ENTER)
         time.sleep(1.2)
 
+    def click_element_by_index(self, index):
+        """
+        Click a specific element from the list returned by get_clickable_elements().
+        """
+        # Step 1: scroll into view and validate the element still exists
+        info = self.driver.execute_script(_CLICK_BY_INDEX_JS, index)
+        if not info.get("ok"):
+            print(f"  click_element_by_index failed: {info.get('reason')}")
+            return False
+
+        print(f"   -> Clicking [{index}] <{info['tag']}> \"{info['text']}\" href={info['href']}")
+
+        # Step 2: get the actual DOM element reference
+        element = self.driver.execute_script(
+            "return window.__clickable_map__[arguments[0]];",
+            index
+        )
+
+        # Step 3: ActionChains click -- real browser event
+        ActionChains(self.driver).move_to_element(element).click().perform()
+        time.sleep(1.2)
+        return True
+
     def click_at(self, x, y):
         """
-        Click at absolute viewport coordinates using Selenium's ActionChains.
-
-        Why not JS dispatchEvent?
-        GitHub (and most modern SPAs) use React's synthetic event system.
-        React attaches a single delegated listener on the root container and
-        only fires its handlers when the browser itself dispatches the event
-        through its native pipeline. Manually constructed MouseEvents via
-        el.dispatchEvent() bypass that pipeline entirely, so React never sees
-        them — the click silently does nothing.
-
-        ActionChains.move_to_element_with_offset + click() tells the Chrome
-        DevTools Protocol to move the actual mouse pointer and fire a real
-        click through the browser engine, which is the only way to reliably
-        trigger React (and similar framework) event handlers.
-
-        Two extra safety measures:
-        1. We first scroll the element into view so that the coordinates are
-           valid (vision models report coordinates relative to the visible
-           viewport; if the page scrolled between the screenshot and the click
-           the target may be off-screen).
-        2. If the element at (x, y) is not itself interactive (e.g. a <span>
-           inside an <a>), we walk up the DOM to find the nearest clickable
-           ancestor before clicking.
+        Fallback: click at raw viewport coordinates.
+        Uses ActionChains (not dispatchEvent) so React sees the event.
         """
-        # Step 1: find the element at the given viewport coordinates and
-        # scroll it into view so it stays at roughly the same spot.
         element = self.driver.execute_script(
             """
-            const el = document.elementFromPoint(arguments[0], arguments[1]);
-            if (el) {
-                el.scrollIntoView({ block: 'center', inline: 'center' });
-            }
+            var el = document.elementFromPoint(arguments[0], arguments[1]);
+            if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
             return el;
             """,
             x, y
         )
-
         if element is None:
-            print(f"⚠️  No element found at ({x}, {y})")
+            print(f"  No element at ({x}, {y})")
             return
 
-        # Step 2: walk up to the nearest clickable ancestor if the target
-        # itself is not interactive (common pattern: <a><span>text</span></a>).
+        # Walk up to nearest clickable ancestor
         element = self.driver.execute_script(
             """
-            let el = arguments[0];
-            const clickableTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT',
-                                           'TEXTAREA', 'LABEL', 'SUMMARY']);
+            var el = arguments[0];
+            var tags = ['A','BUTTON','INPUT','SELECT','TEXTAREA','LABEL','SUMMARY'];
             while (el && el !== document.body) {
-                if (clickableTags.has(el.tagName)) return el;
-                if (el.getAttribute('role') === 'button') return el;
-                if (el.onclick) return el;
+                if (tags.indexOf(el.tagName) !== -1 || el.getAttribute('role') === 'button') return el;
                 el = el.parentElement;
             }
-            // If no clickable ancestor found, return the original element —
-            // it might still respond to the click (e.g. a div with a listener).
             return arguments[0];
             """,
             element
         )
 
-        # Step 3: use ActionChains to perform a real browser-level click.
-        # move_to_element first ensures the pointer is over the element;
-        # click() then fires mousedown → mouseup → click through the engine.
-        actions = action_chains.ActionChains(self.driver)
-        actions.move_to_element(element).click().perform()
-
-        time.sleep(1.0)  # give the page a moment to react / navigate
+        ActionChains(self.driver).move_to_element(element).click().perform()
+        time.sleep(1.0)
 
     def scroll_down(self):
         self.driver.execute_script("window.scrollBy(0, 900);")
